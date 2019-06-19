@@ -31,7 +31,6 @@ def proxy(lport, oport, method='connect'):
     s.listen(50)
     try:
         while True:
-
             # whoo boy i do love me some nested closures
             def conn_thread(client_sock, src_ip):
                 # we're gonna do a real bad and assume ipv4
