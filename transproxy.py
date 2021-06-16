@@ -4,25 +4,14 @@ import sys
 import struct
 import threading
 import subprocess
-import transproxy_native
 import argparse
+import configparser
 
 # some code stolen from mitmproxy, see 
 # https://github.com/mitmproxy/mitmproxy/blob/master/mitmproxy/platform/linux.py
 # according to mitmproxy SO_ORIGINAL_DST = 80
 SO_ORIGINAL_DST = 80
 SOL_IPV6 = 41
-
-EXCLUDE = [
-		"127.0.0.0/8",
-		"192.168.0.0/16",
-		"173.226.66.81/32",
-		"67.23.105.24/32",
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-        ]
-
-PROXY_ADDR = ('127.0.0.1', 3128)
 
 fw_lock = threading.Lock()
 
@@ -50,20 +39,21 @@ def proxy(lport, oport, method='connect'):
                 
                 # connect to the http proxy
                 proxy_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                proxy_conn.connect(('127.0.0.1', 3128))
+                p_addr, p_port = config['proxy_addr']
+                proxy_conn.connect((p_addr, int(p_port)))
                 if method == 'connect':
                     proxy_conn.send(b'CONNECT ' + dst_ip.encode('ASCII') + b':' + str(oport).encode('ascii') + b'\n')
                     resp = proxy_conn.recv(39) # this should get the "HTTP/1.1 200 Connection Established\n\n" response out of the way
 
                 def in_thread():
-                    # data = 'invalid'
-                    # while len(data) > 0:
-                    #     data = proxy_conn.recv(1024)
-                    #     client_sock.send(data)
+                    if config['use_native']:
+                        transproxy_native.copy_fd(proxy_conn.fileno(), client_sock.fileno())
+                    else:
+                        data = 'invalid'
+                        while len(data) > 0:
+                            data = proxy_conn.recv(1024)
+                            client_sock.send(data)
 
-                    # print("entering native code  proxy->client fd0={} fd1={}".format(proxy_conn.fileno(), client_sock.fileno()))
-                    ret = transproxy_native.copy_fd(proxy_conn.fileno(), client_sock.fileno())
-                    # print('thread ret={}'.format(ret))
 
                 it = threading.Thread(target=in_thread)
                 it.start()
@@ -75,18 +65,16 @@ def proxy(lport, oport, method='connect'):
                         while data != b' ':
                             data = client_sock.recv(1)
                             proxy_conn.send(data)
-                            # sys.stdout.buffer.write(data)
 
                         # inject the uri, then continue
                         proxy_conn.send(b'http://' + dst_ip.encode('ascii'))
 
-                    # while len(data) > 0:
-                    #     data = client_sock.recv(1024)
-                    #     proxy_conn.send(data)
-
-                    # print("entering native code client->proxy")
-                    ret = transproxy_native.copy_fd(client_sock.fileno(), proxy_conn.fileno())
-                    # print('non-thread ret={}'.format(ret))
+                    if config['use_native']:
+                        transproxy_native.copy_fd(client_sock.fileno(), proxy_conn.fileno())
+                    else:
+                        while len(data) > 0:
+                            data = client_sock.recv(1024)
+                            proxy_conn.send(data)
                     it.join()
                 finally:
                     proxy_conn.close()
@@ -103,10 +91,9 @@ def proxy(lport, oport, method='connect'):
         subprocess.run(['iptables', '-t', 'nat', '-F', 'OUTPUT'])
 
 def main():
-    # TODO argparse to set PROXY_ADDR
     # fix up the firewall
     subprocess.run(['iptables', '-t', 'nat', '-F', 'OUTPUT'])
-    for subnet in EXCLUDE:
+    for subnet in config['excluded_ips']:
         subprocess.run(['iptables', '-t', 'nat', '-A', 'OUTPUT', '--destination', subnet, '-j', 'ACCEPT'])
 
     http_thread = threading.Thread(target=proxy, args=(80, 80, 'http'), daemon=True)
@@ -119,6 +106,20 @@ def main():
         https_thread.join()
     finally:
         subprocess.run(['iptables', '-t', 'nat', '-F', 'OUTPUT'])
+
+# Read and parse config
+with open('transproxy.cfg') as f:
+    cp = configparser.ConfigParser()
+    cp.read_file(f)
+cp = cp['transproxy']
+config = {
+    'use_native': cp['use_native'].lower() == 'true',
+    'excluded_ips': [s.strip() for s in cp['excluded_ips'].strip().split(',')],
+    'proxy_addr': cp['proxy_addr'].split(':')
+}
+
+if config['use_native']:
+    import transproxy_native
 
 if __name__ == '__main__':
     main()

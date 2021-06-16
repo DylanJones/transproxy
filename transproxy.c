@@ -1,15 +1,10 @@
-extern "C" {
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-}
-
-// Methods
-
 
 static PyObject * tp_copy_fd(PyObject *self, PyObject *args) {
-    unsigned char buf[2048];
+    unsigned char buf[4096];
     int fd0, fd1, ret;
 
     if (!PyArg_ParseTuple(args, "ii", &fd0, &fd1))
